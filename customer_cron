@@ -1,0 +1,383 @@
+<?php
+/* phpinfo();die(); */
+set_time_limit(-1);
+ini_set('fastcgi_read_timeout', '30');
+ini_set('memory_limit', '1024M');
+$log_new      = __DIR__.'/Logs/new_customers.txt';
+$log_existing = __DIR__.'/Logs/existing_customers.txt';
+$logDir = __DIR__.'/Logs/';
+
+if (!is_dir($logDir)) {
+    mkdir($logDir, 0755, true);
+}
+
+file_put_contents($logDir."new_customers.txt", "");
+file_put_contents($logDir."existing_customers.txt", "");
+$api_key = "xxxxx";
+$api_secret = "xxxxxx";
+
+file_put_contents( __DIR__.'/Logs/'."category_start_to_end.txt","Customer Import started at ".date("d.m.Y H:i:s",time())."\r\n");
+
+$base_url = "xxxxx";
+//testxyz
+$domPart = new DOMDocument;
+  $domPart->preserveWhiteSpace = false;
+
+  /* loading the file 
+  https://actetre.de/wp-content/themes/ACTEtre-WP/categories.xml
+  categories-6C80D992-5BF0-896D-938E-E2D4DFF37726.xml (klappkarten Christmas)
+  categories-0B2CA26C-57AA-7AC8-3C25-10EFF502C73D.xml (Klappkarten Everyday)
+  categories-level0.xml
+  */
+  $domPart->Load('https://actetrestorage.blob.core.windows.net/export/customers.xml?sv=2021-12-02&ss=b&srt=co&sp=rltf&se=2030-01-01T01:45:04Z&st=2023-03-18T17:45:04Z&spr=https&sig=I2ltq8oLMDhhlOFkYQ62bvdgcwBnb76mdHreKsgkYZ8%3D');//('https://actetrestorage.blob.core.windows.net/export/categories.xml?sv=2021-12-02&ss=b&srt=co&sp=rltf&se=2030-01-01T01:45:04Z&st=2023-03-18T17:45:04Z&spr=https&sig=I2ltq8oLMDhhlOFkYQ62bvdgcwBnb76mdHreKsgkYZ8%3D');
+
+  /* preparing the xpath for the dom doc */
+  $xpathPart = new DOMXPath($domPart);
+
+  $queryPart = '//Customers//Customer';
+  $itemsPart = $xpathPart->query($queryPart);
+  
+  // XML komplett durchlaufen, Array mit allen Kategorien erstellen
+
+  /* query just the attributes from the xml document */
+  /* $query = '//Categories//Category';
+  $items = $xpath->query($query); */
+  
+  unset($xpathPart);
+  unset($domPart);
+  /* going thru each item */
+  //$articles[] = [];
+  $search_cat_url = $base_url."wp-json/wp/v2/product_cat_search/search_by_name/?category_name=";
+  $categories = [];
+  $products = [];
+  $index;
+  $tmpCustomers = [];
+  $tmpProducts2 = [];
+  $tmpProductsDE = [];
+  $tmpProductsFR = [];
+  $vg_preise = [];
+  $i=0;$x=0;$option_index = 0;
+  $e = 0;
+  
+  foreach ($itemsPart as $item) {        
+      $nodes = $item->childNodes;
+      
+      //$j= 0;
+      foreach ($nodes as $node) {
+       /*  echo "node: ".$node->nodeName." | ".$node->nodeValue."<br>"; */
+        if($node->nodeName == "#text")continue;   
+        
+        $tmpCats[$node->nodeName] = $node->nodeValue;
+
+        if($node->nodeName == "Nummer"){
+            $tmpCustomers['meta_data'][0] = [
+                "key" => "kundennummer",
+                "value" => $node->nodeValue
+              ];
+              $tmpCustomerRoles['customer_number'] = $node->nodeValue;
+              //$tmpCustomers['username'] = $node->nodeValue;
+        }
+        if($node->nodeName == "Email"){
+          $tmpCustomers['email'] = trim($node->nodeValue);
+          $tmpCustomers['username'] = sanitize_user($node->nodeValue);
+        }
+        if($node->nodeName == "Email"){
+          $tmpCustomers['email'] = trim($node->nodeValue);
+        }
+        /* if($node->nodeName == "PLZ"){
+          $tmpCustomers['billing']['postcode'] = $node->nodeValue;
+        } */
+        if($node->nodeName == "Sprache"){
+          $language = "";
+          if($node->nodeValue == "F")
+            $language = "fr_FR";
+          if($node->nodeValue == "D")
+            $language = "de_DE";
+            $tmpCustomers['meta_data'][1] = [
+              "key" => "locale",
+              "value" => $language
+            ];
+          $tmpCustomers['locale'] = $language;
+        }
+        if($node->nodeName == "Firma"){
+          $tmpCustomers['meta_data'][2] = [
+            "key" => "billing_company",
+            "value" => $node->nodeValue
+          ];
+          $tmpCustomers['billing']['company'] = $node->nodeValue;
+        }
+        if($node->nodeName == "Land"){
+          $tmpCustomers['meta_data'][3] = [
+            "key" => "billing_country",
+            "value" => $node->nodeValue
+          ];
+          $tmpCustomers['billing']['country'] = $node->nodeValue;
+        }
+        if($node->nodeName == "PLZ"){
+          $tmpCustomers['meta_data'][5] = [
+            "key" => "billing_postcode",
+            "value" => $node->nodeValue
+          ];
+          $tmpCustomers['billing']['postcode'] = $node->nodeValue;
+        }
+        if($node->nodeName == "Sprache"){
+          $index = $node->nodeValue;
+        }
+
+
+        if($node->nodeName == "Vertriebsgebiete"){
+            $vertriebsgebiete = $node->childNodes;
+
+            foreach($vertriebsgebiete as $gebiet){
+              $arrGebiete[] = $gebiet->nodeValue;
+              if(!isset($tmpCustomerRoles['customer_role'])){
+                /* if($gebiet->nodeValue == "Q")
+                    $tmpCustomerRoles['customer_role'] = 'customer'; */
+                if($gebiet->nodeValue == "D")
+                    $tmpCustomerRoles['customer_role'] = 'customer_de';
+                if($gebiet->nodeValue == "FR")
+                    $tmpCustomerRoles['customer_role'] = 'customer_fr';
+              }
+              
+                
+            }
+            if(!empty($arrGebiete) && !in_array("D",$arrGebiete) && !in_array("FR",$arrGebiete) && in_array("Q",$arrGebiete))
+              $tmpCustomerRoles['customer_role'] = "customer_q";
+            $tmpCustomers['meta_data'][4] = [
+              "key" => "vertriebsgebiete",
+              "value" => $arrGebiete
+          
+          ];
+          /* file_put_contents( __DIR__.'/Logs/'."customer_en.txt","----------vg:----------<br>".var_export($arrGebiete,true)."<br>");
+          file_put_contents( __DIR__.'/Logs/'."customer_en.txt","----------customers:----------<br>".var_export($tmpCustomers,true)."<br>");
+          file_put_contents( __DIR__.'/Logs/'."customer_en.txt","---------roles:----------<br>".var_export($tmpCustomerRoles,true)."<br>"); */
+        }
+
+
+        
+        //$i++;
+        //unset($categories);
+        /* echo $node->nodeName. ": <br>";
+        echo $node->nodeValue. "<br>"; */
+        //$articles[$i][$node->nodeName] = $node->nodeValue;
+        //echo $node->nodeValue. "<br>";//$j=0;
+   
+        //$j++;
+        
+      }
+      if(empty($tmpCustomers['email'])){
+        $tmpCustomers['email'] = "placeholder".$e."@actetre-2.enpr.de";
+        $tmpCustomers['Email'] = "placeholder".$e."@actetre-2.enpr.de";
+        $e++;
+        
+      }
+      if(empty($tmpCustomers['username'])){
+        $tmpCustomers['username'] = sanitize_user($tmpCustomers['billing']['company']);
+
+      }
+      
+      //echo "<pre style='color:red'>".var_export($tmpProducts,true)."</pre>";
+    
+      $tmpCustomers['password'] = random_str(20);
+      $tmpCustomers['tmp_roles'] = $tmpCustomerRoles;
+      $Customers[] = $tmpCustomers;
+      $CustomersRoles[] = $tmpCustomerRoles;
+      unset($tmpCustomers);
+      unset($tmpCustomerRoles);
+      unset($arrGebiete);
+      /* echo "<pre style='color:green;'>test123 ".var_export(json_encode($Products,JSON_PRETTY_PRINT),true)."</pre>";
+      echo "<pre style='color:tomato;'>test123 ".var_export($Products,true)."</pre>"; */
+      
+      //echo "<br>---------<br>";
+      /* echo "ITEM: ".$item->nodeName."<br>";
+      echo "ITEM: ".$item->nodeValue."<br>"; */
+      /* if($i >10)break;
+      $i++; */
+  }
+  //echo "<pre style='color:deeppink'>".var_export($Customers,true)."</pre>";
+  
+  //die();
+  /* echo "<pre style='color:gray'>".var_export($categories,true)."</pre>";
+  echo "Anzahl Kategorien: ".count($categories); */
+  unset($itemsPart);
+  /* $x++;
+  if($x < 50){
+    $data = mb_convert_encoding($strCSV, 'UCS-2LE', 'UTF-8');
+    file_put_contents(__DIR__.'/'."actetre_produkte.csv",$data);
+  } */
+  
+  $index = 0;
+  //die();
+  foreach($Customers as $index => $customer){
+    
+    //break;
+    $arrRole['customer_role'] = $customer['tmp_roles']['customer_role'];
+    $arrRole['meta_data'] = $customer['meta_data'];
+    $api_insert_url = $base_url."wp-json/wp/v2/users";//"wp-json/wc/v3/customers";
+
+    $json_Customers = json_encode($customer,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+    //file_put_contents( __DIR__.'/Logs/'."customer_test.txt",date("d.m.Y H:i:s",time())."\r\n-----------".var_export($json_Customers,true)."--------\r\n");
+    /* file_put_contents( __DIR__.'/Logs/'."testcimport.txt",var_export($json_Customers,true)."\r\n-------------------\r\n");
+    break; */
+    //echo "<pre style='color:tomato'>".var_export(json_encode($arrRole,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE),true)."</pre>";die();
+    //echo "<pre style='color:red'>".var_export($json_Products,true)."</pre>";
+    /* break; */
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $api_insert_url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+    curl_setopt($ch, CURLOPT_POST, 1);
+    curl_setopt($ch, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+    curl_setopt($ch, CURLOPT_USERPWD, "$api_key:$api_secret");
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $json_Customers);
+    
+    
+    $xmlstr = curl_exec($ch);
+    curl_close($ch);
+    $curl_response = json_decode($xmlstr,true);
+    file_put_contents( __DIR__.'/Logs/'."tmp_customer3.txt","Data: \r\n".$json_Customers."\r\n###################\r\n");
+    file_put_contents( __DIR__.'/Logs/'."tmp_customer3.txt","Response: \r\n".$xmlstr."\r\n-------------------\r\n");
+  //continue;
+  //die();
+  
+    if(isset($curl_response['id'])){
+      $api_role_url = $base_url."wp-json/wp/v2/customers/change_role/";
+      $arrRole['ID'] = $curl_response['id'];
+      $json_Role = json_encode($arrRole,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+     
+        $chRole = curl_init();
+        curl_setopt($chRole, CURLOPT_URL, $api_role_url);
+        curl_setopt($chRole, CURLOPT_RETURNTRANSFER, 1);
+        curl_setopt($chRole, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+        curl_setopt($chRole, CURLOPT_POST, 1);
+        curl_setopt($chRole, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+        curl_setopt($chRole, CURLOPT_USERPWD, "$api_key:$api_secret");
+        curl_setopt($chRole, CURLOPT_POSTFIELDS, $json_Role);
+        
+        
+        $xmlstrRole = curl_exec($chRole);
+        curl_close($chRole);
+        $curl_responseRole = json_decode($xmlstrRole,true);
+		file_put_contents($log_new,date("d.m.Y H:i:s")." | NEW | ".$customer['email']." | ID: ".$curl_response['id']."\r\n",FILE_APPEND);
+    }
+
+    if(isset($curl_response['code']) && $curl_response['code'] == "existing_user_email"){
+      
+      $api_url = $base_url.'wp-json/wp/v2/customers/get-id/';
+      $mail = ["email" => $customer['email']];
+      $mail = json_encode($mail);
+
+      $ch_getid = curl_init();
+      curl_setopt($ch_getid, CURLOPT_URL, $api_url);
+      curl_setopt($ch_getid, CURLOPT_RETURNTRANSFER, 1);
+      curl_setopt($ch_getid, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+      curl_setopt($ch_getid, CURLOPT_POST, 1);
+      curl_setopt($ch_getid, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+      curl_setopt($ch_getid, CURLOPT_USERPWD, "$api_key:$api_secret");
+      curl_setopt($ch_getid, CURLOPT_POSTFIELDS, $mail);
+      
+      
+      $xmlstr_getid = curl_exec($ch_getid);
+      curl_close($ch_getid);
+      $curl_response_getid = json_decode($xmlstr_getid,true);
+      
+      $customer_update = $customer;
+      unset($customer_update['username']);
+      unset($customer_update['password']);
+      $json_Customers_update = json_encode($customer_update,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+      
+      $id = $curl_response_getid['ID'];
+// get id by email hier
+      $ch_update = curl_init();
+      curl_setopt($ch_update, CURLOPT_URL, $api_insert_url."/".$id);
+      curl_setopt($ch_update, CURLOPT_RETURNTRANSFER, 1);
+      curl_setopt($ch_update, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+      curl_setopt($ch_update, CURLOPT_POST, 1);
+      curl_setopt($ch_update, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+      curl_setopt($ch_update, CURLOPT_USERPWD, "$api_key:$api_secret");
+      curl_setopt($ch_update, CURLOPT_POSTFIELDS, $json_Customers_update);
+      
+      
+      $xmlstr_update = curl_exec($ch_update);
+      curl_close($ch_update);
+      $curl_response_update = json_decode($xmlstr_update,true);
+
+
+      if(isset($curl_response_update['id'])){
+        $api_role_url = $base_url."wp-json/wp/v2/customers/change_role/";
+        $arrRole['ID'] = $curl_response_update['id'];
+        $json_Role = json_encode($arrRole,JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+  
+          $chRole = curl_init();
+          curl_setopt($chRole, CURLOPT_URL, $api_role_url);
+          curl_setopt($chRole, CURLOPT_RETURNTRANSFER, 1);
+          curl_setopt($chRole, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+          curl_setopt($chRole, CURLOPT_POST, 1);
+          curl_setopt($chRole, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+          curl_setopt($chRole, CURLOPT_USERPWD, "$api_key:$api_secret");
+          curl_setopt($chRole, CURLOPT_POSTFIELDS, $json_Role);
+          
+          
+          $xmlstrRole = curl_exec($chRole);
+          curl_close($chRole);
+          $curl_responseRole = json_decode($xmlstrRole,true);
+      }
+		file_put_contents($log_existing,date("d.m.Y H:i:s")." | EXISTING | ".$customer['email']."\r\n",FILE_APPEND);
+    }
+    unset($arrRole);
+    
+   /*  if($index >5)break;
+    $index++; */
+    // Start API-Call
+  }
+
+  file_put_contents( __DIR__.'/Logs/'."category_start_to_end.txt","Customer Import finished at ".date("d.m.Y H:i:s",time())."\r\n-------------------\r\n");
+
+  /**
+ * Generate a random string, using a cryptographically secure 
+ * pseudorandom number generator (random_int)
+ * 
+ * For PHP 7, random_int is a PHP core function
+ * For PHP 5.x, depends on https://github.com/paragonie/random_compat
+ * 
+ * @param int $length      How many characters do we want?
+ * @param string $keyspace A string of all possible characters
+ *                         to select from
+ * @return string
+ */
+function random_str(
+    $length,
+    $keyspace = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+) {
+    $str = '';
+    $max = mb_strlen($keyspace, '8bit') - 1;
+    if ($max < 1) {
+        throw new Exception('$keyspace must be at least two characters long');
+    }
+    for ($i = 0; $i < $length; ++$i) {
+        $str .= $keyspace[random_int(0, $max)];
+    }
+    return $str;
+}
+
+
+function sanitize_user( $username, $strict = false ) {
+	$raw_username = $username;
+	//$username     = wp_strip_all_tags( $username );
+	//$username     = remove_accents( $username );
+	// Remove percent-encoded characters.
+	$username = preg_replace( '|%([a-fA-F0-9][a-fA-F0-9])|', '', $username );
+	// Remove HTML entities.
+	$username = preg_replace( '/&.+?;/', '', $username );
+
+	// If strict, reduce to ASCII for max portability.
+	if ( $strict ) {
+		$username = preg_replace( '|[^a-z0-9 _.\-@]|i', '', $username );
+	}
+
+	$username = trim( $username );
+	// Consolidate contiguous whitespace.
+	$username = preg_replace( '|\s+|', ' ', $username );
+
+	return $username;
+}
