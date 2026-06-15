@@ -1,0 +1,500 @@
+<?php
+/*
+ Template Name: XML Testseite Artikel ACTETRE
+ Template Post Type: page
+*/
+?>
+
+<?php 
+file_put_contents( __DIR__.'/Logs/'."category_start_to_end.txt","Article Import started at ".date("d.m.Y H:i:s",time())."\r\n");
+
+set_time_limit(-1);
+ini_set('fastcgi_read_timeout', '30');
+ini_set('memory_limit', '1024M');
+$api_key = "xxxx";
+$api_secret = "xxxx";
+
+$base_url = "xxxxx";
+
+$fileIndex = [];
+function sendCronEmail($subject, $message) {
+    $to = "kousthubham@outline.de";   // Change this
+    $headers = "From: noreply@actetre.de\r\n";
+    $headers .= "Content-Type: text/plain; charset=UTF-8\r\n";
+
+    mail($to, $subject, $message, $headers);
+}
+
+// Kategorien laden
+$url = $base_url."wp-json/wp/v2/product_cat_search/search_by_name/?category_name=";//.urlencode($splitString);
+$ch_get_cat = curl_init();
+curl_setopt($ch_get_cat, CURLOPT_URL, $url);
+curl_setopt($ch_get_cat, CURLOPT_RETURNTRANSFER, 1);
+curl_setopt($ch_get_cat, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+curl_setopt($ch_get_cat, CURLOPT_USERPWD, "$api_key:$api_secret");
+
+$json_current_category = curl_exec($ch_get_cat);
+curl_close($ch_get_cat);
+
+$all_cats = json_decode($json_current_category,true);
+// --- Logging ---
+function log_msg($msg, $logFile){
+    if(is_array($msg)) $msg = json_encode($msg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+    file_put_contents($logFile, $msg . "\n", FILE_APPEND);
+}
+
+  // XML-Datei laden
+  
+  $domPart = new DOMDocument;
+  $domPart->preserveWhiteSpace = false;
+
+  
+$domPart->load(__DIR__ . "/xml2.xml");
+ 
+  /* preparing the xpath for the dom doc */
+  $xpathPart = new DOMXPath($domPart);
+
+  $queryPart = '//Products//Product';
+  $itemsPart = $xpathPart->query($queryPart);
+  unset($xpathPart);
+  unset($domPart);
+
+  
+
+  $search_cat_url = $base_url."wp-json/wp/v2/product_cat_search/search_by_name/?category_name=";
+  $categories = [];
+  $products = [];
+  $index;
+  $tmpProducts = [];
+  $tmpProducts2 = [];
+  $tmpProductsDE = [];
+  $tmpProductsFR = [];
+  $vg_preise = [];
+  $tags = [];
+  $option_index = 0;
+
+// XML komplett durchlaufen
+  foreach ($itemsPart as $item) {        
+      $nodes = $item->childNodes;
+      
+      foreach ($nodes as $node) {
+       
+        if($node->nodeName == "#text")continue;   
+        
+        $tmpCats[$node->nodeName] = $node->nodeValue;
+
+        if($node->nodeName == "Key"){
+          $index = $node->nodeValue;
+        }
+
+
+        if($node->nodeName == "SKU"){
+          $tmpProducts["sku"] = $node->nodeValue;
+          
+       
+          
+        }
+        if($node->nodeName == "Bezeichnung"){
+          $tmpProducts["name"] = $node->nodeValue;
+          $tmpProducts["type"] = "simple";
+        }
+        if($node->nodeName == "Beschreibung"){
+          $tmpProducts["description"] = $node->nodeValue;
+          $tmpProducts["short_description"] = $node->nodeValue;
+        }
+        // Standardpreis
+        if($node->nodeName == "Listenpreis"){
+          $tmpProducts["regular_price"] = str_replace(",",".",$node->nodeValue);
+          $tmpProducts['meta_data'][8] = [
+            "key" => "wcfad_original_price",
+            "value" => $tmpProducts["regular_price"]
+          ];
+        }
+
+        // Tags für Suche /////////////
+
+        if($node->nodeName == "SEODescription"){
+          $tags_tmp = explode(", ", $node->nodeValue);
+          foreach($tags_tmp as $tag){
+            $tags[]['name'] = $tag;
+          }
+          $tmpProducts["tags"] = $tags;
+          unset($tags);
+        }
+        // Künstlername
+
+        if($node->nodeName == "Künstlervorname"){
+          $kuenstlervorname = $node->nodeValue;
+        }
+
+        if($node->nodeName == "Künstlernachname"){
+          $kuenstlernachname = $node->nodeValue;
+        }
+
+        if(!empty($kuenstlervorname) && !empty($kuenstlernachname)){
+          $tmpProducts['meta_data'][9] = [
+            "key" => "kunstlername",
+            "value" => $kuenstlervorname." ".$kuenstlernachname
+          ];
+        }else{
+          if(isset( $tmpProducts['meta_data'][9] ) ){
+            $tmpProducts['meta_data'][9] = [
+              "key" => "kunstlername",
+              "value" => ""
+            ];
+          }
+        }
+        // Druckmaße
+
+        if($node->nodeName == "Papierbreite"){
+          $papierbreite = $node->nodeValue;
+        }
+
+        if($node->nodeName == "Papierhöhe"){
+          $papierhoehe = $node->nodeValue;
+        }
+
+        if(!empty($papierbreite) && !empty($papierhoehe)){
+          $tmpProducts['meta_data'][10] = [
+            "key" => "papiergrose",
+            "value" => $papierhoehe." cm x ".$papierbreite." cm"
+          ];
+        }else{
+          if(isset( $tmpProducts['meta_data'][10] ) ){
+            $tmpProducts['meta_data'][10] = [
+              "key" => "papiergrose",
+              "value" => ""
+            ];
+          }
+        }
+
+        // Preise nach Vertriebsgebieten 
+
+        if($node->nodeName == "Option"){
+          $vertriebsgebiete = $node->childNodes;
+          
+          foreach ($vertriebsgebiete as $gebiet){
+            $vg_preise[$option_index]["produktname"] = $tmpProducts["name"];
+            $vg_preise[$option_index]["nummer"] = $tmpProducts["sku"];
+            if($gebiet->nodeName == "Value"){
+              $vg_preise[$option_index]["Vertriebsgebiet"] = $gebiet->nodeValue; 
+            }
+            if($gebiet->nodeName == "Preis"){
+              $vg_preise[$option_index]["Preis"] = $gebiet->nodeValue;
+            }
+            
+          }
+          if($vg_preise[$option_index]["Vertriebsgebiet"] == "D"){
+            $tmpProducts['meta_data'][0] = [
+              "key" => "_regular_price_customer_de",
+              "value" => str_replace(",",".",$vg_preise[$option_index]["Preis"])
+            ];
+            $tmpProducts['meta_data'][8] = [
+              "key" => "_regular_price_administrator",
+              "value" => str_replace(",",".",$vg_preise[$option_index]["Preis"])
+            ];
+          }elseif($vg_preise[$option_index]["Vertriebsgebiet"] == "FR"){
+            $tmpProducts['meta_data'][1] = [
+              "key" => "_regular_price_customer_fr",
+              "value" => str_replace(",",".",$vg_preise[$option_index]["Preis"])
+            ];
+          }
+          
+            
+          
+          
+        }
+        $option_index++;
+
+
+        if($node->nodeName == "VPE"){
+          $tmpProducts['meta_data'][2] = [
+            "key" => "verpackungseinheit",
+            "value" => $node->nodeValue
+          ];
+        }
+        if($node->nodeName == "Vertriebsgebiet"){
+          $tmpProducts['meta_data'][3] = [
+            "key" => "vertriebsgebiet",
+            "value" => $node->nodeValue == "D" ? "DE" : $node->nodeValue
+          ];
+        }
+        // Kategorien zuweisen
+        if($node->nodeName == "Category"){
+
+          $cat = $node->nodeValue;
+          $length_first = strpos($cat,",")+1;
+          $tmp_mid_string = substr($cat,$length_first);
+          $length_second = strpos($tmp_mid_string."_",",")+1;
+          
+          $last_string_length = $length_first+$length_second;
+          $last_string = substr($cat,$last_string_length)."<br>";
+          $arr_last_string = explode("_",$last_string);
+
+          $tmpProductsDE["categories"][0]['id'] = $all_cats[$arr_last_string[0]]['id'];
+          $tmpProductsDE["categories"][1]['id'] = $all_cats[$arr_last_string[0]][$arr_last_string[1]]['id'];
+          if(isset($all_cats[$arr_last_string[0]][$arr_last_string[1]][str_replace(["<br>",";"],["",","],$arr_last_string[2])]['id'])){
+            $tmpProductsDE["categories"][2]['id'] = $all_cats[$arr_last_string[0]][$arr_last_string[1]][str_replace(["<br>",";"],["",","],$arr_last_string[2])]['id'];
+          }else{
+            //unset($tmpProducts);
+            continue;
+          }
+
+
+          $tmpProductsFR["categories"][0]['id'] = $all_cats[$arr_last_string[0]]['translations']['fr'];
+          $tmpProductsFR["categories"][1]['id'] = $all_cats[$arr_last_string[0]][$arr_last_string[1]]['translations']['fr'];
+          if(isset($all_cats[$arr_last_string[0]][$arr_last_string[1]][str_replace(["<br>",";"],["",","],$arr_last_string[2])]['translations']['fr'])){
+            $tmpProductsFR["categories"][2]['id'] = $all_cats[$arr_last_string[0]][$arr_last_string[1]][str_replace(["<br>",";"],["",","],$arr_last_string[2])]['translations']['fr'];
+          }else{
+            //unset($tmpProducts);
+            continue;
+          }
+
+          $tmpProductsEN["categories"][0]['id'] = $all_cats[$arr_last_string[0]]['translations']['en'];
+          $tmpProductsEN["categories"][1]['id'] = $all_cats[$arr_last_string[0]][$arr_last_string[1]]['translations']['en'];
+          if(isset($all_cats[$arr_last_string[0]][$arr_last_string[1]][str_replace(["<br>",";"],["",","],$arr_last_string[2])]['translations']['en'])){
+            $tmpProductsEN["categories"][2]['id'] = $all_cats[$arr_last_string[0]][$arr_last_string[1]][str_replace(["<br>",";"],["",","],$arr_last_string[2])]['translations']['en'];
+          }else{
+            //unset($tmpProducts);
+            continue;
+          }
+
+          
+        }
+
+        if($node->nodeName == "ShopAktiv"){
+          if($node->nodeValue == "true"){
+            $tmpProducts["stock_status"] = "instock";
+          }else{
+            $tmpProducts["stock_status"] = "outofstock";
+          }
+            
+        }
+        if($node->nodeName == "Available"){
+          if($node->nodeValue == "true"){
+            $tmpProducts["status"] = "publish";
+          }else{
+            $tmpProducts["status"] = "draft";
+          }
+          
+        }
+        
+      
+        $tmpProducts['meta_data'][7] = [
+          "key" => "_de_price_method",
+          "value" => "exchange_rate"
+        ];
+        
+
+        
+      }
+
+  
+      $tmpProducts2['de'] = $tmpProducts;
+      $tmpProducts2['fr'] = $tmpProducts;
+      $tmpProducts2['en'] = $tmpProducts;
+     if (
+    isset($tmpProductsDE['categories']) &&
+    isset($tmpProductsFR['categories']) &&
+    isset($tmpProductsEN['categories'])
+) {
+    $tmpProducts2['de']['categories'] = $tmpProductsDE['categories'];
+    $tmpProducts2['fr']['categories'] = $tmpProductsFR['categories'];
+    $tmpProducts2['en']['categories'] = $tmpProductsEN['categories'];
+} else {
+    file_put_contents(
+        __DIR__.'/Logs/category_errors.txt',
+        "Missing category for SKU: " . ($tmpProducts['sku'] ?? 'UNKNOWN') . "\n",
+        FILE_APPEND
+    );
+
+    continue; // Skip this product
+}
+      $tmpProducts2['de']['lang'] = "de";
+      $tmpProducts2['fr']['lang'] = "fr";
+      $tmpProducts2['en']['lang'] = "en";
+      
+      $Products[] = $tmpProducts2;
+      unset($tmpProducts);
+
+  }
+  
+  unset($vg_preise);
+ 
+  unset($itemsPart);
+ file_put_contents( __DIR__.'/Logs/'."test_products.txt","[".date("d.m.Y H:i:s",time())."] [INSERT REQUEST DE]\r\n".var_export($Products,true)."\r\n-------------------\r\n");
+$startTime = date("d.m.Y H:i:s");
+
+sendCronEmail(
+    "ACTETRE Article Import Started",
+    "Cron started at: {$startTime}"
+);
+  foreach($Products as $index => $product){
+
+    $api_insert_url = $base_url."wp-json/wc/v3/products";
+
+    // -----------------------------
+    // CHECK IF PRODUCT EXISTS
+    // -----------------------------
+    $translated_ids = [
+        "sku" => $product['de']["sku"],
+        "name" => $product['de']["name"]
+    ];
+
+    $json_translated_ids = json_encode($translated_ids, JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+
+    $product_languages = get_translated_ids($json_translated_ids,$base_url,$api_key,$api_secret);
+
+    // =============================
+    // 🆕 CREATE (NEW PRODUCT)
+    // =============================
+    if (empty($product_languages['de'])) {
+
+        // ---------- CREATE DE ----------
+        $json_DE = json_encode($product['de'], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+        $responseDE = api_post($api_insert_url, $json_DE, $api_key, $api_secret);
+
+        $id_de = isset($responseDE['id']) ? $responseDE['id'] : null;
+
+        if (!$id_de) {
+            file_put_contents(__DIR__.'/Logs/error_create.txt', "DE CREATE FAILED: ".json_encode($responseDE)."\n", FILE_APPEND);
+            continue;
+        }
+
+        // get translations
+        $langs = get_translations(json_encode(["ID"=>$id_de]), $base_url, $api_key, $api_secret);
+
+        // ---------- CREATE FR ----------
+        $product['fr']['translations']['de'] = $langs['de'];
+        $json_FR = json_encode($product['fr'], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+        $responseFR = api_post($api_insert_url, $json_FR, $api_key, $api_secret);
+
+        // ---------- CREATE EN ----------
+        $langs = get_translations(json_encode(["ID"=>$id_de]), $base_url, $api_key, $api_secret);
+
+        $product['en']['translations']['de'] = $langs['de'];
+        $product['en']['translations']['fr'] = $langs['fr'];
+
+        $json_EN = json_encode($product['en'], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+        $responseEN = api_post($api_insert_url, $json_EN, $api_key, $api_secret);
+
+        file_put_contents(__DIR__.'/Logs/create_log.txt',
+            "[".date("d.m.Y H:i:s")."] CREATED SKU: ".$product['de']['sku']."\n",
+            FILE_APPEND
+        );
+    }
+
+    // =============================
+    // 🔄 UPDATE (EXISTING PRODUCT)
+    // =============================
+    else {
+
+        $tmp_langs = [
+            'de' => $product_languages['de'],
+            'fr' => $product_languages['fr'],
+            'en' => $product_languages['en']
+        ];
+
+        $product["de"]['translations'] = $tmp_langs;
+        $product["fr"]['translations'] = $tmp_langs;
+        $product["en"]['translations'] = $tmp_langs;
+
+        // ---------- UPDATE DE ----------
+        $json_DE = json_encode($product['de'], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+        $resDE = api_put($api_insert_url."/".$product_languages['de'], $json_DE, $api_key, $api_secret);
+
+        // ---------- UPDATE FR ----------
+        $json_FR = json_encode($product['fr'], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+        $resFR = api_put($api_insert_url."/".$product_languages['fr'], $json_FR, $api_key, $api_secret);
+
+        // ---------- UPDATE EN ----------
+        $json_EN = json_encode($product['en'], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE);
+        $resEN = api_put($api_insert_url."/".$product_languages['en'], $json_EN, $api_key, $api_secret);
+
+        file_put_contents(__DIR__.'/Logs/update_log.txt',
+            "[".date("d.m.Y H:i:s")."] UPDATED SKU: ".$product['de']['sku']."\n",
+            FILE_APPEND
+        );
+    }
+}
+  unset($Products);
+
+
+  file_put_contents( __DIR__.'/Logs/'."category_start_to_end.txt","Article Import finished at ".date("d.m.Y H:i:s",time())."\r\n-------------------\r\n");
+
+  function get_translations($data,$base_url,$api_key,$api_secret){
+
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $base_url."wp-json/wp/v2/product_lang/get_language/");
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+    curl_setopt($ch, CURLOPT_POST, 1);
+    curl_setopt($ch, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+    curl_setopt($ch, CURLOPT_USERPWD, "$api_key:$api_secret");
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+    
+    
+    $xmlstr = curl_exec($ch);
+    curl_close($ch);
+    $curl_response = json_decode($xmlstr,true);
+
+    return $curl_response;
+  }
+
+  function get_translated_ids($data,$base_url,$api_key,$api_secret){
+
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $base_url."wp-json/wp/v2/product_id_by_sku/get_id/");
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, ["Content-Type: application/json"]);
+    curl_setopt($ch, CURLOPT_POST, 1);
+    curl_setopt($ch, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+    curl_setopt($ch, CURLOPT_USERPWD, "$api_key:$api_secret");
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+    
+    
+    $xmlstr = curl_exec($ch);
+    curl_close($ch);
+    $curl_response = json_decode($xmlstr,true);
+
+    return $curl_response;
+  }
+$endTime = date("d.m.Y H:i:s");
+
+sendCronEmail(
+    "ACTETRE Article Import Finished",
+    "Cron finished at: {$endTime}"
+);
+function api_post($url, $json, $api_key, $api_secret) {
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => ["Content-Type: application/json"],
+        CURLOPT_POST => true,
+        CURLOPT_USERPWD => "$api_key:$api_secret",
+        CURLOPT_POSTFIELDS => $json
+    ]);
+
+    $response = curl_exec($ch);
+    curl_close($ch);
+
+    return json_decode($response, true);
+}
+
+function api_put($url, $json, $api_key, $api_secret) {
+    $ch = curl_init();
+    curl_setopt_array($ch, [
+        CURLOPT_URL => $url,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => ["Content-Type: application/json"],
+        CURLOPT_CUSTOMREQUEST => "PUT",
+        CURLOPT_USERPWD => "$api_key:$api_secret",
+        CURLOPT_POSTFIELDS => $json
+    ]);
+
+    $response = curl_exec($ch);
+    curl_close($ch);
+
+    return json_decode($response, true);
+}
